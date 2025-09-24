@@ -1,7 +1,7 @@
 from scholarqa.rag.reranker.reranker_base import CrossEncoderScores
 from scholarqa.rag.reranker.modal_engine import ModalReranker
 from scholarqa.rag.retrieval import PaperFinderWithReranker, PaperFinder
-from scholarqa.rag.retriever_base import FullTextRetriever, LocalhostRetriever
+from scholarqa.rag.retriever_base import FullTextRetriever
 from scholarqa import ScholarQA
 from scholarqa.llms.constants import GEMINI_25_FLASH
 

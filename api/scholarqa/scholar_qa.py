@@ -569,7 +569,8 @@ class ScholarQA:
                 self.postprocess_json_output(json_summary, quotes_meta=quotes_metadata)
                 if section_json["format"] == "list" and section_json["citations"] and self.run_table_generation:
                     cluster_json.result["dimensions"][idx]["idx"] = idx
-                    cit_ids = [int(c["paper"]["corpus_id"]) for c in section_json["citations"]]
+                    # Keep IDs as strings for arXiv compatibility; table generator accepts list of IDs
+                    cit_ids = [str(c["paper"]["corpus_id"]) for c in section_json["citations"]]
                     tthread = self.gen_table_thread(user_id, query, cluster_json.result["dimensions"][idx], cit_ids,
                                                     tables)
                     if tthread:

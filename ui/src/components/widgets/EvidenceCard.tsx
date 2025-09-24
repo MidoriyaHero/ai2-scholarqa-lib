@@ -14,7 +14,7 @@ import { PaperDetails } from '../../@types/AsyncTaskState';
 
 export interface EvidenceCardProps {
   evidences: Evidence[];
-  corpusId: number;
+  corpusId: number | string;
   children?: React.ReactNode;
   fullTitle: string;
   id: string;
@@ -53,7 +53,9 @@ export const EvidenceCard = (props: EvidenceCardProps): React.ReactNode => {
   return (
     <Container>
       <Link
-        href={`https://semanticscholar.org/p/${props.corpusId}`}
+        href={(typeof props.corpusId === 'string' && /\d+\.\d+/.test(props.corpusId))
+          ? `https://arxiv.org/abs/${props.corpusId}`
+          : `https://semanticscholar.org/p/${props.corpusId}`}
         variant="body2"
         color={'unset'}
         onClick={handleClick}
@@ -75,8 +77,10 @@ export const EvidenceCard = (props: EvidenceCardProps): React.ReactNode => {
           {(rest?.fullTitle?.length ?? 0) > 0 ? (
             <>
               <Typography sx={{ mb: 0, mt: 0.5, fontWeight: 'bold' }} variant="h6">
-                {props.corpusId > 0 ? (
-                  <Link href={`https://semanticscholar.org/p/${props.corpusId}`} target='_blank' rel="noreferrer">
+                {((typeof props.corpusId === 'string') || (typeof props.corpusId === 'number' && props.corpusId > 0)) ? (
+                  <Link href={(typeof props.corpusId === 'string' && /\d+\.\d+/.test(props.corpusId))
+                    ? `https://arxiv.org/abs/${props.corpusId}`
+                    : `https://semanticscholar.org/p/${props.corpusId}`} target='_blank' rel="noreferrer">
                     {rest.fullTitle}
                   </Link>
                 ) : rest.fullTitle}

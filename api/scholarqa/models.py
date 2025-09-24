@@ -11,8 +11,8 @@ class Author(BaseModel):
 
 
 class PaperDetails(BaseModel):
-    corpus_id: int = Field(allow_none=False, description=(
-        "The Semantic Scholar id of the cited paper"))
+    corpus_id: str = Field(allow_none=False, description=(
+        "The id of the cited paper (corpusId or arXiv id)"))
     title: str = Field(description="Title of the paper")
     year: int = Field(description="Year of publication")
     venue: Optional[str] = Field(description="Venue of publication", default=None)

@@ -83,7 +83,8 @@ def pop_ref_data(ref_str_id, ref_corpus_id, fixed_quote, curr_paper_metadata) ->
     curr_ref["id"] = ref_str_id
     curr_ref["snippets"] = [fq.strip() for fq in fixed_quote.split("...")]
     curr_ref["paper"] = dict()
-    curr_ref["paper"]["corpus_id"] = make_int(ref_corpus_id)
+    # Keep IDs as strings to support arXiv-style IDs like "2509.01324"
+    curr_ref["paper"]["corpus_id"] = str(ref_corpus_id) if ref_corpus_id is not None else ""
     if curr_paper_metadata:
         #Commenting out the open access check as we switch to s2 api for the open access logic
 
@@ -107,18 +108,50 @@ def pop_ref_data(ref_str_id, ref_corpus_id, fixed_quote, curr_paper_metadata) ->
 def get_json_summary(llm_model: str, summary_sections: List[str], summary_quotes: Dict[str, Any],
                      paper_metadata: Dict[str, Any], citation_ids: Dict[str, Dict[int, str]],
                      inline_tags=False) -> List[Dict[str, Any]]:
-    text_ref_format = '<Paper corpusId="{corpus_id}" paperTitle="{ref_str}" isShortName></Paper>'
+    # Include both corpusId and arxivId for forward-compat UI usage; values are identical for now
+    text_ref_format = '<Paper corpusId="{corpus_id}" arxivId="{corpus_id}" paperTitle="{ref_str}" isShortName></Paper>'
     sections = []
     llm_name_parts = llm_model.split("/", maxsplit=1)
     llm_ref_format = f'<Model name="{llm_name_parts[0].capitalize()}" version="{llm_name_parts[1]}">'
     summary_quotes = {anyascii(k): v for k, v in summary_quotes.items()}
     inline_citation_quotes = {anyascii(k): v for incite in summary_quotes.values() for k, v in
                               incite["inline_citations"].items()}
+
+    def normalize_id(id_token: str) -> str:
+        """Normalize paper ID tokens for robust matching.
+        - Strip leading labels like 'paperId ' or 'arXiv:'
+        - Trim surrounding whitespace and trailing punctuation like '.' or ','
+        - Keep dots inside (for arXiv IDs), keep case and digits
+        """
+        if id_token is None:
+            return ""
+        norm = anyascii(str(id_token)).strip()
+        # Remove common prefixes
+        for prefix in ["paperid ", "paperId ", "arxiv:", "arXiv:"]:
+            if norm.startswith(prefix):
+                norm = norm[len(prefix):]
+        # Trim trailing punctuation
+        norm = norm.rstrip(".,;: ]")
+        # Trim stray leading '[' if present
+        norm = norm.lstrip("[")
+        return norm
+
+    # Build maps from normalized ID -> canonical bracket key
+    def key_to_norm_id(key: str) -> str:
+        try:
+            token = key[1:-1].split(" | ")[0]
+            return normalize_id(token)
+        except Exception:
+            return ""
+
+    id_to_main_key = {key_to_norm_id(k): k for k in summary_quotes.keys()}
+    id_to_inline_key = {key_to_norm_id(k): k for k in inline_citation_quotes.keys()}
     for sec in summary_sections:
         curr_section = get_section_text(sec)
         text = curr_section["text"]
         if curr_section:
-            pattern = r"(?:; )?(\d+ \| [A-Za-z. ]+ \| \d+ \| Citations: \d+)"
+            # Allow dotted IDs (e.g., arXiv formats) in adjacency fix
+            pattern = r"(?:; )?(\S+ \| [A-Za-z. ]+ \| \d+ \| Citations: \d+)"
             replacement = r"] [\1"
             text = re.sub(pattern, replacement, text)
             text = re.sub(r"\[\]", "", text)
@@ -130,23 +163,56 @@ def get_json_summary(llm_model: str, summary_sections: List[str], summary_quotes
 
             for ref in references:
                 ref = anyascii(ref)
+                resolved_key = None
+                resolved_source = None  # 'main' or 'inline'
                 if ref in summary_quotes or ref in inline_citation_quotes:
-                    ref_parts = ref[1:-1].split(" | ")
+                    # Exact match
+                    resolved_key = ref
+                    resolved_source = 'main' if ref in summary_quotes else 'inline'
+                else:
+                    # Try ID-based resolution
+                    try:
+                        ref_token = ref[1:-1].split(" | ")[0]
+                    except Exception:
+                        ref_token = ref.strip("[]")
+                    norm_ref_id = normalize_id(ref_token)
+
+                    # Direct ID match first
+                    if norm_ref_id in id_to_main_key:
+                        resolved_key = id_to_main_key[norm_ref_id]
+                        resolved_source = 'main'
+                    elif norm_ref_id in id_to_inline_key:
+                        resolved_key = id_to_inline_key[norm_ref_id]
+                        resolved_source = 'inline'
+                    else:
+                        # Unique prefix match among available IDs
+                        main_candidates = [k for k in id_to_main_key.keys() if k.startswith(norm_ref_id)] if norm_ref_id else []
+                        inline_candidates = [k for k in id_to_inline_key.keys() if k.startswith(norm_ref_id)] if norm_ref_id else []
+                        if len(main_candidates) == 1:
+                            resolved_key = id_to_main_key[main_candidates[0]]
+                            resolved_source = 'main'
+                        elif len(inline_candidates) == 1:
+                            resolved_key = id_to_inline_key[inline_candidates[0]]
+                            resolved_source = 'inline'
+
+                if resolved_key:
+                    ref_parts = resolved_key[1:-1].split(" | ")
                     ref_corpus_id, ref_str = ref_parts[0], f"({ref_parts[1]}, {make_int(ref_parts[2])})".replace(
                         "NULL, ", "")
-                    if ref_corpus_id not in refs_done:
-                        if ref in summary_quotes:
-                            fixed_quote = summary_quotes[ref]["quote"]
+                    norm_done_id = normalize_id(ref_corpus_id)
+                    if norm_done_id not in refs_done:
+                        if resolved_source == 'main':
+                            fixed_quote = summary_quotes[resolved_key]["quote"]
                         else:
                             # abstract for inline citation
-                            fixed_quote = inline_citation_quotes[ref]
+                            fixed_quote = inline_citation_quotes[resolved_key]
                         fixed_quote = fixed_quote.strip().replace("“", '"').replace("”", '"')
                         if fixed_quote.startswith("..."):
                             fixed_quote = fixed_quote[3:]
                         if fixed_quote.endswith("..."):
                             fixed_quote = fixed_quote[:-3]
                         # dict to save reference strings as there is a possibility of having multiple papers in the same year from the same author
-                        refs_done.add(ref_corpus_id)
+                        refs_done.add(norm_done_id)
                         ref_str_id = resolve_ref_id(ref_str, ref_corpus_id, citation_ids)
                         ref_data = pop_ref_data(ref_str_id, ref_corpus_id, fixed_quote,
                                                 paper_metadata.get(ref_corpus_id))

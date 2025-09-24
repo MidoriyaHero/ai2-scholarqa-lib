@@ -12,7 +12,7 @@ import {
 } from './InlineChipWidget';
 
 export interface InlinePaperChipWidgetProps {
-  corpusId: number;
+  corpusId: number | string;
   paperTitle: string;
   isMultiLine?: boolean;
   isFullWidth?: boolean;

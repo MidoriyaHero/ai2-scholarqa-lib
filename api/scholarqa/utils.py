@@ -4,6 +4,7 @@ import sys
 from collections import namedtuple
 from logging import Formatter
 from typing import Any, Dict, Optional, Set, List
+import re
 
 import requests
 from fastapi import HTTPException
@@ -17,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 S2_API_BASE_URL = "http://localhost:8001/graph/v1/"
 NUMERIC_META_FIELDS = {"year", "citationCount", "referenceCount", "influentialCitationCount"}
-CATEGORICAL_META_FIELDS = {"title", "abstract", "corpusId", "authors", "venue", "isOpenAccess", "openAccessPdf"}
+# Include externalIds so we can map ArXiv responses back to requested IDs
+CATEGORICAL_META_FIELDS = {"title", "abstract", "corpusId", "authors", "venue", "isOpenAccess", "openAccessPdf", "externalIds"}
 METADATA_FIELDS = ",".join(CATEGORICAL_META_FIELDS.union(NUMERIC_META_FIELDS))
 
 
@@ -138,20 +140,45 @@ def get_paper_metadata(corpus_ids: Set[str], fields=METADATA_FIELDS) -> Dict[str
 
     # Try to get real metadata from S2 API if available, otherwise use fake data
     try:
+        # Prepare mixed ID payload: support "ArXiv:{id}" and "CorpusId:{id}" and pass through pre-prefixed IDs
+        ids_payload = []
+        for cid in corpus_ids:
+            scid = str(cid).strip()
+            lscid = scid.lower()
+            if lscid.startswith(("corpusid:", "arxiv:", "doi:", "semanticscholar:")):
+                ids_payload.append(scid)
+            elif re.match(r"^\d{4}\.\d{4,5}(v\d+)?$", scid, flags=re.IGNORECASE):
+                ids_payload.append(f"ArXiv:{scid}")
+            else:
+                ids_payload.append(f"CorpusId:{scid}")
+
         paper_data = query_s2_api(
             end_pt="paper/batch",
             params={
                 "fields": fields
             },
-            payload={"ids": ["CorpusId:{0}".format(cid) for cid in corpus_ids]},
+            payload={"ids": ids_payload},
             method="post",
         )
-        real_metadata = {
-            str(pdata["corpusId"]): {k: make_int(v) if k in NUMERIC_META_FIELDS else pdata.get(k) for k, v in pdata.items()}
-            for pdata in paper_data if pdata and "corpusId" in pdata
-        }
-        # Update with real metadata if available
-        paper_metadata.update(real_metadata)
+
+        # Update with real metadata if available, keyed by the originally requested IDs when possible
+        requested_keys = {str(cid): str(cid) for cid in corpus_ids}
+        for pdata in paper_data:
+            if not pdata:
+                continue
+            normalized = {k: make_int(v) if k in NUMERIC_META_FIELDS else pdata.get(k) for k, v in pdata.items()}
+            # Try ArXiv mapping first
+            try:
+                arx_id = None
+                if isinstance(pdata.get("externalIds"), dict):
+                    arx_id = pdata["externalIds"].get("ArXiv")
+                if arx_id and str(arx_id) in requested_keys:
+                    paper_metadata[str(arx_id)] = normalized
+            except Exception:
+                pass
+            # Also map by corpusId if that was requested
+            if "corpusId" in pdata and str(pdata["corpusId"]) in requested_keys:
+                paper_metadata[str(pdata["corpusId"]) ] = normalized
     except Exception as e:
         logger.info(f"Failed to fetch real metadata, using fake data: {e}")
 

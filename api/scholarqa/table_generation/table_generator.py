@@ -30,7 +30,7 @@ class TableGenerator:
         user_id: str,
         original_query: str, 
         section_title: str, 
-        corpus_ids: List[int],
+        corpus_ids: List[str],
         column_num: int = 10,
         run_subselection: bool = True,
         column_model: Optional[str] = GPT_4o,
@@ -110,7 +110,7 @@ class TableGenerator:
         row_id_map = {}
         for corpus_id in corpus_ids:
             row_id = str(uuid.uuid4())
-            row_id_map[corpus_id] = row_id
+            row_id_map[str(corpus_id)] = row_id
             table.add_rows([
                 TableRow(
                     id=row_id,
@@ -216,7 +216,7 @@ class TableGenerator:
         cell_costs = output.get("cost", {})
         table_cells = {}
         for value in generated_values:
-            cell_id = f"{row_id_map[int(value['corpusId'])]}_{column_id}"
+            cell_id = f"{row_id_map[str(value['corpusId'])]}_{column_id}"
             cell = TableCell(
                 id=cell_id,
                 value=value['displayValue'],

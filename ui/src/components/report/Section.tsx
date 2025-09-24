@@ -37,7 +37,7 @@ export const NoMemoSection = (props: { section: GeneratedSection, idx: number, t
           }
 
           if (corpusId && paperTitleStr) {
-            const citation = citationId2Citation[corpusId]
+            const citation = citationId2Citation[corpusId.toString()]
             const detail = citation?.paper;
             if (!detail) {
               return id;
@@ -49,7 +49,7 @@ export const NoMemoSection = (props: { section: GeneratedSection, idx: number, t
                 paperTitle={paperTitleStr}
                 corpusId={corpusId}
                 fullTitle={detail.title ?? '[Paper Title Unkonwn]'}
-                id={`${corpusId} `}
+                id={`${corpusId.toString()} `}
                 paperDetails={detail}
                 evidences={(citation.snippets ?? []).map((snippet) => ({ text: snippet }))}
                 noBadge

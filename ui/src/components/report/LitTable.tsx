@@ -86,7 +86,7 @@ export const LitTable: React.FC<Props> = (props) => {
           </TableHead>
           <TableBody>
             {rows.map((row) => {
-              const detail = row.paper_corpus_id ? corpusId2Citation?.[row.paper_corpus_id]?.paper : undefined;
+              const detail = row.paper_corpus_id ? corpusId2Citation?.[row.paper_corpus_id.toString()]?.paper : undefined;
               let paperTitle: React.ReactNode = row.display_value;
               if (detail && row.paper_corpus_id) {
                 let paperTitleStr = detail.title ?? row.display_value;

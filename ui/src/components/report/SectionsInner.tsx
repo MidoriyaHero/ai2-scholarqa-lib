@@ -55,17 +55,17 @@ export const SectionsInner = (props: { sections: Sections, taskId: string, cooki
     }
   }, [setExpanded]);
 
-  const seen = new Set<number>();
+  const seen = new Set<string>();
   const citations = sections.filter(section => section.text && section.citations).map(section => section.citations).flat().filter(citation => citation && citation?.paper && citation?.id);
 
   const referencesMarkdown = citations.map((citation) => {
     if (!citation || !citation?.id) {
       return ''
     }
-    if (seen.has(citation.paper.corpus_id)) {
+    if (seen.has(citation.paper.corpus_id.toString())) {
       return '';
     }
-    seen.add(citation.paper.corpus_id);
+    seen.add(citation.paper.corpus_id.toString());
     return `1. ${PaperMetadataString({
       authors: citation.paper.authors,
       title: citation.paper.title,
@@ -85,11 +85,22 @@ export const SectionsInner = (props: { sections: Sections, taskId: string, cooki
           }
           const citationId2Citation: { [corpusId: string]: CitationSrc } = {};
 
+          // Keep unique citations using string key
+          const seen = new Set<string>();
           section.citations?.forEach((citation) => {
             if (citation?.paper?.corpus_id) {
-              citationId2Citation[citation.paper.corpus_id] = citation;
+              const key = citation.paper.corpus_id.toString();
+              if (seen.has(key)) {
+                return;
+              }
+              seen.add(key);
             }
           });
+          const citations = section.citations?.map((citation) => ({
+            corpusId: citation.paper.corpus_id,
+            id: citation.id,
+            paper: citation.paper,
+          })) || [];
           return (
             <AccordionContainer key={`${ section.title } -${ idx } `}>
               <StyledAccordion

@@ -26,7 +26,7 @@ const formatSection = (section: GeneratedSection): GeneratedSection => {
     if (!citation.id) {
       return;
     }
-    const tag = `<Paper id="${citation.id}" corpusId="${citation.paper.corpus_id}" paperTitle="${citation.id}" fullTitle="${citation.paper.title}" />`
+    const tag = `<Paper id="${citation.id}" corpusId="${citation.paper.corpus_id}" arxivId="${citation.paper.corpus_id}" paperTitle="${citation.id}" fullTitle="${citation.paper.title}" />`
     taggedText = taggedText?.replaceAll(citation.id, tag)
     taggedText = taggedText?.replaceAll(" <Paper id=", "<Paper id=")
   })

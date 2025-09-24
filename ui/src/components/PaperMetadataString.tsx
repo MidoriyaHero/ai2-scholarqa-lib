@@ -22,9 +22,12 @@ export const PaperMetadataString = (props: PropType): string => {
     cleanVenue = ` ${cleanVenue}.`
   }
 
+  const isArxivId = typeof corpusId === 'string' && /\d+\.\d+/.test(corpusId);
+  const paperHref = isArxivId ? `https://www.arxiv.org/abs/${corpusId}` : `https://www.semanticscholar.org/p/${corpusId}`;
+
   return (
       `${authors.map((author, index) => {
         return (`<a key="${author.authorId}" target='_blank' href="https://www.semanticscholar.org/author/${author.authorId}">${author.name}</a>${index < authors.length - 1 ? ', ' : ''}`)
-      }).join('')}${truncated ? ' et al' : ''}. <a target='_blank' href="https://www.semanticscholar.org/p/${corpusId}">${title}</a>. ${year}.${cleanVenue}${citationCount > 0 ? ` ${citationCount} citations.` : ''}`
+      }).join('')}${truncated ? ' et al' : ''}. <a target='_blank' href="${paperHref}">${title}</a>. ${year}.${cleanVenue}${citationCount > 0 ? ` ${citationCount} citations.` : ''}`
   );
 };
