@@ -22,6 +22,7 @@ from scholarqa.rag.reranker.modal_engine import ModalReranker
 from scholarqa.rag.reranker.reranker_base import RERANKER_MAPPING
 from scholarqa.rag.retrieval import PaperFinderWithReranker, PaperFinder
 from scholarqa.rag.retriever_base import FullTextRetriever
+from scholarqa.rag.local_retriever import LocalhostRetriever
 from scholarqa.scholar_qa import ScholarQA
 from scholarqa.state_mgmt.local_state_mgr import LocalStateMgrClient
 from typing import Type, TypeVar
@@ -42,7 +43,14 @@ def lazy_load_state_mgr_client():
 
 
 def lazy_load_scholarqa(task_id: str, sqa_class: Type[T] = ScholarQA, **sqa_args) -> T:
-    retriever = FullTextRetriever(**run_config.retriever_args)
+    # Select retriever based on configuration
+    if run_config.retrieval_service == "localhost":
+        retriever_args = run_config.retriever_args.copy()
+        base_url = retriever_args.pop("base_url", "http://localhost:8080/api/v1/")
+        retriever = LocalhostRetriever(base_url=base_url, **retriever_args)
+    else:
+        retriever = FullTextRetriever(**run_config.retriever_args)
+
     if run_config.reranker_args:
         reranker = RERANKER_MAPPING[run_config.reranker_service](**run_config.reranker_args)
         paper_finder = PaperFinderWithReranker(retriever, reranker, **run_config.paper_finder_args)
@@ -183,7 +191,7 @@ def _start_async_task(task_id: str, tool_request: ToolRequest) -> str:
 
 def _handle_async_task_check_in(
         tool_req: ToolRequest,
-) -> Union[ToolResponse | AsyncToolResponse]:
+) -> Union[ToolResponse, AsyncToolResponse]:
     """
     For tasks that will take a while to complete, we issue a task id
     that can be used to request status updates and eventually, results.

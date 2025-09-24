@@ -122,7 +122,8 @@ class PaperFinder(AbsPaperFinder):
         df = df[~df.sentences.isna() & ~df.year.isna()] if not df.empty else df
         if df.empty:
             return df
-        df["corpus_id"] = df["corpus_id"].astype(int)
+        # Keep corpus_id as string since localhost IDs contain dots
+        # df["corpus_id"] = df["corpus_id"].astype(int)
 
         # there are multiple relevance judgments in ['relevance_judgements'] for each paper
         # we will keep rows where ANY of the relevance judgments are 2 or 3
@@ -163,7 +164,7 @@ class PaperFinder(AbsPaperFinder):
         df.loc[:, "relevance_judgment_input_expanded"] = prepend_text + section_text
         df["reference_string"] = df.apply(
             lambda
-                row: anyascii(f"[{make_int(row.corpus_id)} | {get_ref_author_str(row.authors)} | "
+                row: anyascii(f"[{row.corpus_id} | {get_ref_author_str(row.authors)} | "
                               f"{make_int(row['year'])} | Citations: {make_int(row['citation_count'])}]"),
             axis=1,
         )

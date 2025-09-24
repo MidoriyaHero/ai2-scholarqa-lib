@@ -1,6 +1,6 @@
 # Data structure to represent a table
 from pydantic import BaseModel, Field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 class TableWidget(BaseModel):
     id: str = Field(description="Unique identifier for the table widget")
@@ -57,7 +57,7 @@ class TableCell(BaseModel):
     id: str = Field(
         description="Unique identifier for the cell. In the format ${row.id}-${column.id}"
     )
-    value: Optional[str | int] = Field(default=None, description="Value of the cell")
+    value: Optional[Union[str, int]] = Field(default=None, description="Value of the cell")
     display_value: str = Field(description="Display value of the cell")
     is_loading: bool = Field(
         default=False, description="Whether the cell is still loading"
