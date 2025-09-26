@@ -1,4 +1,5 @@
 import logging
+from logs import log
 from abc import abstractmethod
 from typing import List, Dict, Any, Optional
 
@@ -32,12 +33,15 @@ class PaperFinder(AbsPaperFinder):
 
     def retrieve_passages(self, query: str, **filter_kwargs) -> List[Dict[str, Any]]:
         """Retrieve relevant passages along with scores from an index for the given query"""
+        log.info(f"[RAG][stage1][retrieve_passages][input] query='{query}' filters={filter_kwargs}")
         filter_kwargs.update({
             "fields": ",".join([f"snippet.{f}" for f in self.snippet_srch_fields])
         })
         if self.max_date:
             filter_kwargs.update({"insertedBefore": '{}'.format(self.max_date)})
-        return self.retriever.retrieve_passages(query, **filter_kwargs)
+        res = self.retriever.retrieve_passages(query, **filter_kwargs)
+        log.info(f"[RAG][stage1][retrieve_passages][output] snippets={len(res)}")
+        return res
 
     def retrieve_additional_papers(self, query: str, **filter_kwargs) -> List[Dict[str, Any]]:
         if self.max_date:
@@ -53,7 +57,10 @@ class PaperFinder(AbsPaperFinder):
             else:
                 filter_kwargs.update({"publicationDateOrYear": ':{}'.format(self.max_date)})
 
-        return self.retriever.retrieve_additional_papers(query, **filter_kwargs)
+        log.info(f"[RAG][stage1][keyword_search][input] query='{query}' filters={filter_kwargs}")
+        res = self.retriever.retrieve_additional_papers(query, **filter_kwargs)
+        log.info(f"[RAG][stage1][keyword_search][output] papers={len(res)}")
+        return res
 
     def rerank(self, query: str, retrieved_ctxs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return retrieved_ctxs
@@ -154,7 +161,7 @@ class PaperFinder(AbsPaperFinder):
     @staticmethod
     def aggregate_snippets_to_papers(snippets_list: List[Dict[str, Any]], paper_metadata: Dict[str, Any]) -> List[
         Dict[str, Any]]:
-        logging.info(f"Aggregating {len(snippets_list)} passages at paper level with metadata")
+        log.info(f"[RAG][aggregate] aggregating {len(snippets_list)} passages at paper level")
         paper_snippets = dict()
         for snippet in snippets_list:
             corpus_id = snippet["corpus_id"]
@@ -172,7 +179,7 @@ class PaperFinder(AbsPaperFinder):
             if not paper_snippets[corpus_id]["abstract"] and snippet["section_title"] == "abstract":
                 paper_snippets[corpus_id]["abstract"] = snippet["text"]
         sorted_ctxs = sorted(paper_snippets.values(), key=lambda x: x["relevance_judgement"], reverse=True)
-        logger.info(f"Scores after aggregation: {[s['relevance_judgement'] for s in sorted_ctxs]}")
+        log.info(f"[RAG][aggregate] scores after aggregation: {[s['relevance_judgement'] for s in sorted_ctxs]}")
         return sorted_ctxs
 
     def format_retrieval_response(self, agg_reranked_candidates: List[Dict[str, Any]]) -> pd.DataFrame:
@@ -199,7 +206,7 @@ class PaperFinder(AbsPaperFinder):
         try:
             df = df.drop(["text", "section_title", "ref_mentions", "score", "stype", "rerank_score"], axis=1)
         except Exception as e:
-            logger.info(e)
+            log.warning(f"[RAG][format_df] drop columns warning: {e}")
         df = df[~df.sentences.isna() & ~df.year.isna()] if not df.empty else df
         if df.empty:
             return df

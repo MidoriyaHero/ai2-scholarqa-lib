@@ -4,7 +4,7 @@ from typing import List, Dict, Any
 import logging
 
 logger = logging.getLogger(__name__)
-
+from FlagEmbedding import FlagReranker
 try:
     import torch
     import torch.nn.functional as F
@@ -71,7 +71,7 @@ class CrossEncoderScores(AbstractReranker):
 # Supports the BAAI/bge... models https://huggingface.co/BAAI/bge-reranker-v2-m3
 class FlagEmbeddingScores:
     def __init__(self, model_name_or_path: str):
-        from FlagEmbedding import FlagReranker
+        
         self.model = FlagReranker(model_name_or_path, use_fp16=True)
 
     def get_tokenizer(self):

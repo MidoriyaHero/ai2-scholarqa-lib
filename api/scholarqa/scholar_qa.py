@@ -1,4 +1,5 @@
 import logging
+from logs import log
 import os
 import re
 from threading import Thread
@@ -50,7 +51,7 @@ class ScholarQA:
         if logs_config:
             self.logs_config = logs_config
         else:
-            logger.info("initializing the log configs")
+            log.info("[SQA] initializing the log configs")
             self.logs_config = LogsConfig(llm_cache_dir="lib_llm_cache")
             self.logs_config.init_formatter()
 
@@ -66,7 +67,7 @@ class ScholarQA:
         self.llm_caller = CostAwareLLMCaller(self.state_mgr)
         self.llm_kwargs = llm_kwargs if llm_kwargs else dict()
         if not multi_step_pipeline:
-            logger.info(f"Creating a new MultiStepQAPipeline with model: {llm_model} for all the steps")
+            log.info(f"[SQA] Creating MultiStepQAPipeline with model: {llm_model}")
             self.multi_step_pipeline = MultiStepQAPipeline(self.llm_model, fallback_llm=fallback_llm, **self.llm_kwargs)
         else:
             self.multi_step_pipeline = multi_step_pipeline
@@ -83,7 +84,7 @@ class ScholarQA:
             curr_response: List[GeneratedSection] = None,
             task_estimated_time: str = None,
     ):
-        logger.info(status)
+        log.info(f"[SQA][state] {status}")
         if self.task_id and self.tool_request:
             self.state_mgr.update_task_state(
                 self.task_id,
@@ -104,10 +105,19 @@ class ScholarQA:
         llm_args = {"max_tokens": 4096*2}
         if self.llm_kwargs:
             llm_args.update(self.llm_kwargs)
-        return self.llm_caller.call_method(
+        log.info(f"[SQA][stage0][input] query='{query}' model={self.decomposer_llm}")
+        res = self.llm_caller.call_method(
             cost_args=cost_args, method=decompose_query, query=query, decomposer_llm_model=self.decomposer_llm,
             fallback=self.multi_step_pipeline.fallback_llm, **llm_args
         )
+        try:
+            dq = res.result
+            log.info(
+                f"[SQA][stage0][output] rewritten='{dq.rewritten_query}' | keyword='{dq.keyword_query}' | filters={dq.search_filters} | cost={res.tot_cost} tokens={res.tokens.total if hasattr(res, 'tokens') else 'n/a'}"
+            )
+        except Exception as e:
+            log.warning(f"[SQA][stage0] log output failed: {e}")
+        return res
 
     @traceable(name="Retrieval: Find relevant paper passages for the query")
     def find_relevant_papers(self, llm_processed_query: LLMProcessedQuery, **kwargs) -> Tuple[
@@ -121,6 +131,9 @@ class ScholarQA:
             step_estimated_time=5
         )
         # Get relevant paper passages from the Semantic Scholar index for the llm rewritten query
+        log.info(
+            f"[SQA][stage1][input] rewritten='{rewritten_query}' | keyword='{keyword_query}' | filters={llm_processed_query.search_filters}"
+        )
         snippet_results = self.paper_finder.retrieve_passages(query=rewritten_query,
                                                               **llm_processed_query.search_filters,
                                                               **kwargs)
@@ -137,25 +150,51 @@ class ScholarQA:
                 step_estimated_time=1)
         else:
             search_api_results = []
-        logger.info("Retrieval time: %.2f", time() - start)
+        log.info(
+            f"[SQA][stage1][output] snippets={len(snippet_results)} | keyword_papers={len(search_api_results)} | time={time() - start:.2f}s"
+        )
 
         return snippet_results, search_api_results
 
     @traceable(name="Retrieval: Rerank the passages and aggregate at paper level")
-    def rerank_and_aggregate(self, user_query: str, retrieved_candidates: List[Dict[str, Any]], filter_paper_metadata: [
-        Dict[str, Any]]) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    def rerank_and_aggregate(self, user_query: str, retrieved_candidates: List[Dict[str, Any]], filter_paper_metadata: [Dict[str, Any]]) -> Tuple[pd.DataFrame, Dict[str, Any]]:
         if self.paper_finder.n_rerank > 0:
             self.update_task_state(
                 f"Further re-rank and aggregate passages to focus on up to top {self.paper_finder.n_rerank} papers",
                 step_estimated_time=10)
         start = time()
+        log.info(f"[SQA][stage2][input] candidates={len(retrieved_candidates)} | query='{user_query[:200]}'")
         reranked_candidates = self.paper_finder.rerank(user_query, retrieved_candidates)
-        logger.info("Reranking time: %.2f", time() - start)
+        log.info(f"[SQA][stage2] reranked_passages={len(reranked_candidates)} time={time() - start:.2f}s")
         paper_metadata = filter_paper_metadata
         paper_metadata.update(get_paper_metadata(
             {snippet["corpus_id"] for snippet in reranked_candidates if
              snippet["corpus_id"] not in filter_paper_metadata}))
         agg_df = self.paper_finder.aggregate_into_dataframe(reranked_candidates, paper_metadata)
+        # TODO: Just add to extra Auto-cap number of papers if user explicitly asked for a count, e.g., "top 20", "20 papers"
+        try:
+            size_patterns = [
+                r"\btop\s+(\d{1,4})\b",
+                r"\b(\d{1,4})\s+(?:papers?|results?|docs?|articles?)\b",
+                r"\b(?:find|get|show|return|fetch)\s+(\d{1,4})\b",
+                r"\b(?:up\s+to|max(?:imum)?)\s+(\d{1,4})\b",
+            ]
+            requested_size = None
+            for pat in size_patterns:
+                m = re.search(pat, user_query, re.I)
+                if m:
+                    requested_size = int(m.group(1))
+                    break
+            if requested_size and requested_size > 0 and not agg_df.empty:
+                agg_df = agg_df.head(requested_size)
+                logger.info("[ASTA][STEP2] apply user requested_size=%d", requested_size)
+        except Exception:
+            pass
+        try:
+            top_ids = agg_df.corpus_id.head(5).tolist() if not agg_df.empty else []
+            log.info(f"[SQA][stage2][output] papers={len(agg_df)} top_ids={top_ids}")
+        except Exception as e:
+            log.warning(f"[SQA][stage2] output log failed: {e}")
         self.update_task_state(
             f"Found {len(agg_df)} highly relevant papers after re-ranking and aggregating",
             step_estimated_time=1)
@@ -165,11 +204,10 @@ class ScholarQA:
     @traceable(name="Generation: Extract relevant quotes from paper passages or filter")
     def step_select_quotes(self, query: str, scored_df: pd.DataFrame, cost_args: CostReportingArgs = None,
                            sys_prompt: str = SYSTEM_PROMPT_QUOTE_PER_PAPER) -> CostAwareLLMResult:
-        logger.info("Running Step 1 - quote extraction")
+        log.info("[SQA] Running Step 1 - quote extraction")
         self.update_task_state("Extracting salient key statements from papers",
                                step_estimated_time=15)
-        logger.info(
-            f"{scored_df.shape[0]} papers with relevance_judgement >= {self.paper_finder.context_threshold} to start with.")
+        log.info(f"[SQA] {scored_df.shape[0]} papers with relevance_judgement >= {self.paper_finder.context_threshold}")
         start = time()
         cost_args = cost_args._replace(model=self.multi_step_pipeline.llm_model)._replace(
             description="Corpus QA Step 1: Quote extraction")
@@ -179,17 +217,21 @@ class ScholarQA:
         api_corpus_ids = set(
             scored_df[scored_df.sentences.apply(lambda x: not x)].corpus_id.astype(str))
         ref_strs = {rs.split(" | ")[0][1:] for rs in per_paper_summaries.result}
-        logger.info(f"Paper abstracts used from s2 api: {api_corpus_ids.intersection(ref_strs)}")
+        log.info(f"[SQA] Paper abstracts used from s2 api: {api_corpus_ids.intersection(ref_strs)}")
 
-        logger.info(
-            f"Step 1 done - {len(per_paper_summaries.result)} papers with quotes extracted, cost: {per_paper_summaries.tot_cost}, "
-            f"time: {time() - start:.2f}")
+        try:
+            sample_key = next(iter(per_paper_summaries.result.keys())) if per_paper_summaries.result else None
+            sample_val = per_paper_summaries.result[sample_key][:200] if sample_key else None
+            log.info(f"[SQA][stage3][output] papers_with_quotes={len(per_paper_summaries.result)} sample={sample_key}: {sample_val}")
+        except Exception:
+            pass
+        log.info(f"[SQA] Step 1 done - {len(per_paper_summaries.result)} papers, cost={per_paper_summaries.tot_cost}, time={time() - start:.2f}s")
         return per_paper_summaries
 
     @traceable(name="Generation: Cluster quotes to generate an organization plan")
     def step_clustering(self, query: str, per_paper_summaries: Dict[str, str], cost_args: CostReportingArgs = None,
                         sys_prompt: str = SYSTEM_PROMPT_QUOTE_CLUSTER) -> CostAwareLLMResult:
-        logger.info("Running Step 2: Clustering the extracted quotes into meaningful dimensions")
+        log.info("[SQA] Running Step 2: Clustering quotes into dimensions")
         self.update_task_state("Synthesizing an answer outline based on extracted quotes", step_estimated_time=15)
         start = time()
         cost_args = cost_args._replace(model=self.multi_step_pipeline.llm_model)._replace(
@@ -197,7 +239,12 @@ class ScholarQA:
         cluster_json = self.llm_caller.call_method(cost_args, self.multi_step_pipeline.step_clustering,
                                                    query=query, per_paper_summaries=per_paper_summaries,
                                                    sys_prompt=sys_prompt)
-        logger.info(f"Step 2 done - {cluster_json.result}, cost: {cluster_json.tot_cost}, time: {time() - start:.2f}")
+        try:
+            dim_names = [d.get("name") for d in cluster_json.result.get("dimensions", [])]
+            log.info(f"[SQA][stage4][output] dims={dim_names}")
+        except Exception:
+            pass
+        log.info(f"[SQA] Step 2 done, cost={cluster_json.tot_cost}, time={time() - start:.2f}s")
         return cluster_json
 
     @traceable(name="Generation: Generate an iterative summary")
@@ -205,7 +252,7 @@ class ScholarQA:
                                    plan_json: Dict[str, Any], cost_args: CostReportingArgs = None,
                                    sys_prompt: str = PROMPT_ASSEMBLE_SUMMARY) -> Generator[
         str, None, CostAwareLLMResult]:
-        logger.info("Running Step 3: Assemble the summary with the links (takes ~2 mins)")
+        log.info("[SQA] Running Step 3: Assemble summary (takes ~2 mins)")
         start = time()
 
         cost_args = cost_args._replace(model=self.multi_step_pipeline.llm_model)._replace(
@@ -220,7 +267,7 @@ class ScholarQA:
         except StopIteration as e:
             return_val = e.value
         if return_val:
-            logger.info(f"Step 3 done, cost: {return_val.tot_cost}, time: {time() - start:.2f}")
+            log.info(f"[SQA] Step 3 done, cost={return_val.tot_cost}, time={time() - start:.2f}s")
         return return_val
 
     @staticmethod
@@ -392,7 +439,7 @@ class ScholarQA:
                                                  citations=citations)
             return generated_section
         except Exception as e:
-            logger.error(f"Error while converting json to TaskResult: {e}")
+            log.error(f"[SQA] Error while converting json to TaskResult: {e}")
             raise e
 
     def postprocess_json_output(self, json_summary: List[Dict[str, Any]], **kwargs) -> None:
@@ -414,9 +461,7 @@ class ScholarQA:
     def gen_table_thread(self, user_id: str, query: str, dim: Dict[str, Any],
                          cit_ids: List[int], tlist: List[Any]) -> Thread:
         def call_table_generator(didx: int, payload: Dict[str, Any]):
-            logger.info(
-                "Received table generation request for topic: " + payload["section_title"]
-            )
+            log.info("[SQA][table] Received request for topic: " + payload["section_title"]) 
             table, costs = self.table_generator.run_table_generation(
                 thread_id=payload["task_id"],
                 user_id=payload["user_id"],
@@ -448,22 +493,22 @@ class ScholarQA:
     @traceable(run_type="tool", name="ai2_scholar_qa_trace")
     def run_qa_pipeline(self, req: ToolRequest, inline_tags=False) -> TaskResult:
         """
-                This function takes a query and returns a response.
-                Goes through the following steps:
-                0) Decompose the query to get filters like year, venue, fos, citations, etc along with a re-written
-                version of the query and a query suitable for keyword search.
-                1) Query retrieval to get the relevant snippets from the index (n_retrieval)
-                1.1) Query semantic scholar with the keyword search query to get the relevant papers.(n_keyword_srch)
-                2) Re-rank the snippets based on the query with a cross encoder (n_rerank)
-                3) Get exact relevant quotes from an LLM
-                4) Generate outline and cluster the quotes from (3)
-                4.1) The quotes cluster in the outline have inline citations associated with them. Map the quotes to
-                their inline citations and include them with the quotes.
-                5) Generate the summarized output using the quotes and outline in (3) and (4)
+        This function takes a query and returns a response.
+        Goes through the following steps:
+        0) Decompose the query to get filters like year, venue, fos, citations, etc along with a re-written
+        version of the query and a query suitable for keyword search.
+        1) Query retrieval to get the relevant snippets from the index (n_retrieval)
+        1.1) Query semantic scholar with the keyword search query to get the relevant papers.(n_keyword_srch)
+        2) Re-rank the snippets based on the query with a cross encoder (n_rerank)
+        3) Get exact relevant quotes from an LLM
+        4) Generate outline and cluster the quotes from (3)
+        4.1) The quotes cluster in the outline have inline citations associated with them. Map the quotes to
+        their inline citations and include them with the quotes.
+        5) Generate the summarized output using the quotes and outline in (3) and (4)
 
-                :param req: A scientific query posed to scholar qa by a user, consists of the string query, task id and user id
-                :param inline_tags: Whether to include inline <paper> tags in the output or not
-                :return: A response to the query
+        :param req: A scientific query posed to scholar qa by a user, consists of the string query, task id and user id
+        :param inline_tags: Whether to include inline <paper> tags in the output or not
+        :return: A response to the query
 
         """
         self.tool_request = req
@@ -508,7 +553,7 @@ class ScholarQA:
         reranked_df, paper_metadata = self.rerank_and_aggregate(query, retrieved_candidates,
                                                                 {str(paper["corpus_id"]): paper for paper in
                                                                  s2_srch_metadata})
-        if reranked_df.empty:
+        if reranked_df.empty: 
             raise Exception(
                 "No relevant papers found for the query post reranking, skipping quote extraction.")
         event_trace.trace_rerank_event(reranked_df.to_dict(orient="records"))
