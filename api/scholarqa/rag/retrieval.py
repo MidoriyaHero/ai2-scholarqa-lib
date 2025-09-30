@@ -58,6 +58,87 @@ class PaperFinder(AbsPaperFinder):
     def rerank(self, query: str, retrieved_ctxs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return retrieved_ctxs
 
+    def search(self, query: str, log_callback=None, **filter_kwargs) -> pd.DataFrame:
+        """Search for papers using full-text and keyword retrieval.
+
+        Returns a DataFrame with paper metadata and aggregated relevant passages.
+        This is a search-only implementation that doesn't involve QA generation.
+
+        Args:
+            query: Search query string
+            log_callback: Optional callback function for logging (message, level)
+            **filter_kwargs: Additional filters for the search
+
+        Returns:
+            DataFrame with columns: corpus_id, title, authors, year, venue, abstract,
+                                  citation_count, reference_count, relevance_judgment_input_expanded, etc.
+        """
+        def log(message: str, level: str = "info"):
+            """Helper to log both to logger and callback"""
+            if level == "info":
+                logger.info(message)
+            elif level == "warning":
+                logger.warning(message)
+            elif level == "error":
+                logger.error(message)
+
+            if log_callback:
+                log_callback(message, level)
+
+        log(f"Starting search for query: '{query}' with filters: {filter_kwargs}")
+
+        # Step 1: Retrieve passages from full-text search
+        log("Step 1: Starting full-text passage retrieval...")
+        passages = self.retrieve_passages(query, **filter_kwargs)
+        log(f"Retrieved {len(passages)} passages from full-text search")
+
+        # Step 2: Retrieve additional papers from keyword search
+        log("Step 2: Starting keyword paper search...")
+        additional_papers = self.retrieve_additional_papers(query, **filter_kwargs)
+        log(f"Retrieved {len(additional_papers)} papers from keyword search")
+
+        # Step 3: Combine all retrieved items
+        log("Step 3: Combining and deduplicating results...")
+        all_retrieved_items = passages + additional_papers
+
+        if not all_retrieved_items:
+            log("No results found for the query", "warning")
+            return pd.DataFrame()
+
+        # Step 4: Rerank the combined results
+        log("Step 4: Reranking results...")
+        reranked_items = self.rerank(query, all_retrieved_items)
+        log(f"Reranked to {len(reranked_items)} items")
+
+        # Step 5: Get metadata for all papers
+        log("Step 5: Fetching paper metadata...")
+        corpus_ids = list(set([item["corpus_id"] for item in reranked_items if item.get("stype") != "public_api"]))
+
+        if corpus_ids:
+            from scholarqa.utils import get_paper_metadata
+            log(f"Fetching metadata for {len(corpus_ids)} unique papers...")
+            paper_metadata = get_paper_metadata(corpus_ids)
+            log(f"Retrieved metadata for {len(paper_metadata)} papers")
+        else:
+            paper_metadata = {}
+
+        # Step 6: Add metadata from public_api results
+        log("Step 6: Processing public API results...")
+        for item in reranked_items:
+            if item.get("stype") == "public_api" and item["corpus_id"] not in paper_metadata:
+                paper_metadata[item["corpus_id"]] = {
+                    key: item.get(key) for key in ["title", "authors", "year", "venue", "abstract",
+                                                 "citationCount", "referenceCount", "influentialCitationCount", "corpusId"]
+                    if key in item
+                }
+
+        # Step 7: Aggregate snippets into papers and format as DataFrame
+        log("Step 7: Aggregating snippets into papers and formatting...")
+        result_df = self.aggregate_into_dataframe(reranked_items, paper_metadata)
+
+        log(f"Search completed successfully. Returning {len(result_df)} papers")
+        return result_df
+
     def aggregate_into_dataframe(self, snippets_list: List[Dict[str, Any]], paper_metadata: Dict[str, Any]) -> \
             pd.DataFrame:
         """The reranked snippets is passage level. This function aggregates the passages to the paper level,

@@ -13,10 +13,18 @@ from google.cloud import storage
 from scholarqa import glog
 from scholarqa.llms.litellm_helper import setup_llm_cache
 
+# Import config for S2 API URL
+try:
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).parent.parent.parent))
+    from backend.config import config
+    S2_API_BASE_URL = config.S2_API_BASE_URL
+except ImportError:
+    # Fallback to environment variable if config import fails
+    S2_API_BASE_URL = os.getenv("S2_API_BASE_URL", "http://localhost:8001/graph/v1/")
+
 logger = logging.getLogger(__name__)
-
-
-S2_API_BASE_URL = "http://localhost:8001/graph/v1/"
 NUMERIC_META_FIELDS = {"year", "citationCount", "referenceCount", "influentialCitationCount"}
 # Include externalIds so we can map ArXiv responses back to requested IDs
 CATEGORICAL_META_FIELDS = {"title", "abstract", "corpusId", "authors", "venue", "isOpenAccess", "openAccessPdf", "externalIds"}
@@ -105,8 +113,15 @@ def query_s2_api(
         method="get",
 ):
     url = S2_API_BASE_URL + end_pt
+    headers = {}
+
+    # Add API key if available
+    s2_api_key = os.getenv("S2_API_KEY")
+    if s2_api_key:
+        headers["x-api-key"] = s2_api_key
+
     req_method = requests.get if method == "get" else requests.post
-    response = req_method(url, params=params, json=payload)
+    response = req_method(url, params=params, json=payload, headers=headers)
     if response.status_code != 200:
         logging.exception(f"S2 API request to end point {end_pt} failed with status code {response.status_code}")
         raise HTTPException(
