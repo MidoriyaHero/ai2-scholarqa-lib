@@ -40,11 +40,10 @@ class FullTextRetriever(AbstractRetriever):
         query_params.update({"query": query, "limit": min(self.n_retrieval, 128)})
         log.info(f"[RAG][retriever] snippet_search params={query_params}")
         snippets = query_s2_api(
-            end_pt="snippet/search",
+            end_pt="snippet/search",    
             params=query_params,
-            method="post",
+            method="get",
         )
-        log.debug(f"DEBUG HERE")
         snippets_list = []
         res_data = snippets["data"]
         if res_data:
