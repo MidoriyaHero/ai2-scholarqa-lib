@@ -1,6 +1,6 @@
 import logging
 from scholarqa.llms.constants import *
-from typing import List, Any, Callable, Tuple, Iterator, Union, Generator, Optional
+from typing import List, Any, Callable, Tuple, Union, Generator, Optional
 
 import litellm
 from litellm.caching import Cache
@@ -135,10 +135,43 @@ def llm_completion(user_prompt: str, system_prompt: str = None, fallback=GPT_5_C
     reasoning_tokens = 0 if not (res_usage.completion_tokens_details and
                                  res_usage.completion_tokens_details.reasoning_tokens) else \
         res_usage.completion_tokens_details.reasoning_tokens
-    res_str = response["choices"][0]["message"]["content"]
+
+    # Safely extract text content; handle None or missing fields for providers like Gemini
+    res_str = None
+    try:
+        msg = response["choices"][0]["message"]
+    except Exception:
+        msg = None
+
+    if msg is not None:
+        try:
+            res_str = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        except Exception:
+            res_str = None
+
+        if res_str is None:
+            logger.warning("Content returned as None, checking for response in tool_calls...")
+            tool_calls = None
+            try:
+                tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
+            except Exception:
+                tool_calls = None
+            args_text = ""
+            if isinstance(tool_calls, list) and tool_calls:
+                first = tool_calls[0]
+                try:
+                    if isinstance(first, dict):
+                        fn = first.get("function") or {}
+                        args_text = fn.get("arguments", "")
+                    else:
+                        args_text = getattr(getattr(first, "function", object()), "arguments", "")
+                except Exception:
+                    args_text = ""
+            res_str = args_text
+
     if res_str is None:
-        logger.warning("Content returned as None, checking for response in tool_calls...")
-        res_str = response["choices"][0]["message"]["tool_calls"][0].function.arguments
+        res_str = ""
+
     cost_tuple = CompletionResult(content=res_str.strip(), model=response.model,
                                   cost=res_cost if not response.get("cache_hit") else 0.0,
                                   input_tokens=res_usage.prompt_tokens,
