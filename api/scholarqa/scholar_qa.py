@@ -13,10 +13,11 @@ from langsmith import traceable
 
 from scholarqa.config.config_setup import LogsConfig
 from scholarqa.llms.constants import CostAwareLLMResult, CLAUDE_4_SONNET, CLAUDE_37_SONNET, GPT_5_CHAT
-from scholarqa.llms.litellm_helper import CostAwareLLMCaller, CostReportingArgs
-from scholarqa.llms.prompts import SYSTEM_PROMPT_QUOTE_PER_PAPER, SYSTEM_PROMPT_QUOTE_CLUSTER, PROMPT_ASSEMBLE_SUMMARY
+from scholarqa.llms.litellm_helper import CostAwareLLMCaller, CostReportingArgs, llm_completion
+from scholarqa.llms.prompts import SYSTEM_PROMPT_QUOTE_PER_PAPER, SYSTEM_PROMPT_QUOTE_CLUSTER, \
+                                    PROMPT_ASSEMBLE_SUMMARY, SECTION_BREAK_DOWN_PROMPT
 from scholarqa.models import GeneratedSection, TaskResult, ToolRequest, CitationSrc
-from scholarqa.postprocess.json_output_utils import get_json_summary
+from scholarqa.postprocess.json_output_utils import get_json_summary, safe_json_parse
 from scholarqa.preprocess.query_preprocessor import validate, decompose_query, LLMProcessedQuery
 from scholarqa.rag.multi_step_qa_pipeline import MultiStepQAPipeline
 from scholarqa.rag.retrieval import PaperFinder
@@ -96,7 +97,7 @@ class ScholarQA:
             )
 
     @traceable(name="Preprocessing: Validate and decompose user query")
-    def preprocess_query(self, query: str, cost_args: CostReportingArgs=None, ) -> CostAwareLLMResult:
+    def preprocess_query(self, query: str, cost_args: CostReportingArgs=None) -> CostAwareLLMResult:
         if self.validate:
             # Validate the query for harmful/unanswerable content
             validate(query)
@@ -119,6 +120,60 @@ class ScholarQA:
             log.warning(f"[SQA][stage0] log output failed: {e}")
         return res
 
+    @traceable(name="Planning: Draft outline early")
+    def step_draft_outline(
+        self,
+        rewritten_query: str,
+        cost_args: CostReportingArgs = None,
+        max_sections: int = 5,
+        min_sections: int = 2,
+    ) -> List[str]:
+        """
+        Generate a structured outline (section titles) early in the QA pipeline.
+        """
+        log.info("[SQA][DRAFTING] Drafting outline early from query")
+        self.update_task_state("Drafting initial outline (section titles)", step_estimated_time=3)
+
+        # --- Enhanced prompt ---
+        prompt = SECTION_BREAK_DOWN_PROMPT.format(
+            rewritten_query=rewritten_query,
+            min_sections=min_sections,
+            max_sections=max_sections,
+        )
+
+        # --- Call LLM ---
+        outline_res = self.llm_caller.call_method(
+            cost_args=cost_args._replace(description="Draft outline early"),
+            method=llm_completion,
+            user_prompt=rewritten_query,
+            system_prompt=prompt,
+            model=self.llm_model,
+        )
+
+        # --- Postprocess result ---
+        raw_output = outline_res.result
+        log.debug(f"[SQA][DRAFTING] Raw LLM output: {raw_output}")
+        
+        # Extract content from CompletionCost if needed
+        if hasattr(raw_output, 'content'):
+            content = raw_output.content
+        else:
+            content = str(raw_output)
+        
+        content = content.strip()
+        
+        try:
+            outline = safe_json_parse(content)
+            if not isinstance(outline, list) or not all(isinstance(s, str) for s in outline):
+                raise ValueError("Outline is not a valid JSON list of strings")
+            log.info(f"[SQA][DRAFTING] Successfully parsed outline: {outline}")
+        except Exception as e:
+            log.warning(f"[SQA][DRAFTING] Failed to parse outline as JSON: {e}")
+            log.debug(f"[SQA][DRAFTING] Content was: {content}")
+            outline = ["Overview", "Methods", "Limitations", "Future Work"]
+            log.info(f"[SQA][DRAFTING] Using fallback outline: {outline}")
+        return outline
+        
     @traceable(name="Retrieval: Find relevant paper passages for the query")
     def find_relevant_papers(self, llm_processed_query: LLMProcessedQuery, **kwargs) -> Tuple[
         List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -239,11 +294,6 @@ class ScholarQA:
         cluster_json = self.llm_caller.call_method(cost_args, self.multi_step_pipeline.step_clustering,
                                                    query=query, per_paper_summaries=per_paper_summaries,
                                                    sys_prompt=sys_prompt)
-        try:
-            dim_names = [d.get("name") for d in cluster_json.result.get("dimensions", [])]
-            log.info(f"[SQA][stage4][output] dims={dim_names}")
-        except Exception:
-            pass
         log.info(f"[SQA] Step 2 done, cost={cluster_json.tot_cost}, time={time() - start:.2f}s")
         return cluster_json
 
@@ -447,8 +497,8 @@ class ScholarQA:
 
     def answer_query(self, query: str, inline_tags: bool = True) -> Dict[str, Any]:
         task_id = str(uuid4())
-        self.logs_config.task_id = task_id
-        logger.info("New task")
+        self.logs_config.task_id = task_id  #When we have 2 processes, I can trace what prcess is currently running by task_id
+        logger.info("[TASK ID] Get new task")
         tool_request = ToolRequest(task_id=task_id, query=query, user_id="lib_user")
         try:
             task_result = self.run_qa_pipeline(tool_request, inline_tags)
@@ -493,23 +543,28 @@ class ScholarQA:
     @traceable(run_type="tool", name="ai2_scholar_qa_trace")
     def run_qa_pipeline(self, req: ToolRequest, inline_tags=False) -> TaskResult:
         """
-        This function takes a query and returns a response.
-        Goes through the following steps:
-        0) Decompose the query to get filters like year, venue, fos, citations, etc along with a re-written
-        version of the query and a query suitable for keyword search.
-        1) Query retrieval to get the relevant snippets from the index (n_retrieval)
-        1.1) Query semantic scholar with the keyword search query to get the relevant papers.(n_keyword_srch)
-        2) Re-rank the snippets based on the query with a cross encoder (n_rerank)
-        3) Get exact relevant quotes from an LLM
-        4) Generate outline and cluster the quotes from (3)
-        4.1) The quotes cluster in the outline have inline citations associated with them. Map the quotes to
-        their inline citations and include them with the quotes.
-        5) Generate the summarized output using the quotes and outline in (3) and (4)
+        Structured QA pipeline that processes scientific queries through organized stages.
+        
+        Pipeline stages:
+        0) Query preprocessing: validate and decompose query into filters and rewritten version
+        1) Early outline planning: draft section structure from rewritten query for structured QA
+        2) Paper retrieval: find relevant passages using rewritten query (preserves full context)
+        3) Reranking: re-rank and aggregate passages at paper level
+        4) Quote extraction: extract salient statements from papers
+        5) Clustering: organize quotes into structured dimensions with early outline guidance
+        6) Citation mapping: map quotes to inline citations and metadata
+        7) Summary generation: generate structured answer sections
+        8) Table generation: create comparison tables for list-format sections
+        
+        Key benefits:
+        - Preserves full context through rewritten query for paper retrieval
+        - Provides structured QA response through early outline guidance
+        - Ensures comprehensive coverage without missing aspects
+        - Maintains cross-references between sections
 
-        :param req: A scientific query posed to scholar qa by a user, consists of the string query, task id and user id
-        :param inline_tags: Whether to include inline <paper> tags in the output or not
-        :return: A response to the query
-
+        :param req: ToolRequest containing query, task_id, and user_id
+        :param inline_tags: Whether to include inline <paper> tags in output
+        :return: TaskResult with generated sections, cost, and token usage
         """
         self.tool_request = req
         self.update_task_state("Processing user query", task_estimated_time="~3 minutes", step_estimated_time=5)
@@ -518,7 +573,7 @@ class ScholarQA:
         msg_id = task_id if not msg_id else msg_id
         query = req.query
         logger.info(
-            f"Received query: {query} from user_id: {user_id} with opt_in: {req.opt_in}"
+            f"[QA PIPELINE] Received query: {query} from user_id: {user_id} with opt_in: {req.opt_in}"
         )
         event_trace = EventTrace(
             task_id,
@@ -538,7 +593,26 @@ class ScholarQA:
         llm_processed_query = self.preprocess_query(query, cost_args)
         event_trace.trace_decomposition_event(llm_processed_query)
 
-        # Paper finder step - retrieve relevant paper passages from semantic scholar index and api
+        # Step 1: Draft early outline from rewritten query for structured QA
+        log.info("[SQA] Drafting early outline for structured QA response")
+        self.update_task_state("Planning answer structure", step_estimated_time=5)
+        early_outline = []
+        try:
+            rewritten = getattr(llm_processed_query, "result", None)
+            rq = rewritten.rewritten_query if rewritten else query
+            early_outline = self.step_draft_outline(
+                rewritten_query=rq,
+                cost_args=cost_args._replace(description="Early outline planning"),
+                max_sections=5,
+                min_sections=2
+            )
+            log.info(f"[SQA] Generated {len(early_outline)} sections: {early_outline}")
+        except Exception as e:
+            log.warning(f"[SQA] Early outline failed: {e}, proceeding without it")
+            early_outline = []
+
+        # Step 2: Paper retrieval using rewritten query (preserves full context)
+        log.info("[SQA] Retrieving papers with full context from rewritten query")
         snippet_srch_res, s2_srch_res = self.find_relevant_papers(llm_processed_query.result)
         retrieved_candidates = snippet_srch_res + s2_srch_res
         if not retrieved_candidates:
@@ -546,7 +620,7 @@ class ScholarQA:
                 f"There is no relevant information in the retrieved snippets for query: {query}.")
         event_trace.trace_retrieval_event(retrieved_candidates)
 
-        # Rerank the retrieved candidates based on the query with a cross encoder
+        # Step 3: Rerank and aggregate papers
         s2_srch_metadata = [{k: v for k, v in paper.items() if
                              k == "corpus_id" or k in NUMERIC_META_FIELDS or k in CATEGORICAL_META_FIELDS} for paper in
                             s2_srch_res]
@@ -558,34 +632,51 @@ class ScholarQA:
                 "No relevant papers found for the query post reranking, skipping quote extraction.")
         event_trace.trace_rerank_event(reranked_df.to_dict(orient="records"))
 
-        # Step 1 - quote extraction
+        # Step 4: Quote extraction
         per_paper_summaries = self.step_select_quotes(query, reranked_df, cost_args)
         if not per_paper_summaries.result:
             raise Exception(
                 "No relevant quotes extracted for the query, can't proceed further.")
         event_trace.trace_quote_event(per_paper_summaries)
 
-        # step 2: outline planning and clustering
-        cluster_json = self.step_clustering(query, per_paper_summaries.result, cost_args)
-        # Changing to expected format in the summary generation prompt
+        # Step 5: Clustering with early outline guidance
+        log.info("[SQA] Clustering quotes with early outline guidance")
+        enhanced_sys_prompt = SYSTEM_PROMPT_QUOTE_CLUSTER
+        if early_outline:
+            outline_text = "\n".join([f"- {section}" for section in early_outline])
+            enhanced_sys_prompt = f"""{SYSTEM_PROMPT_QUOTE_CLUSTER}
+
+IMPORTANT: Use the following suggested outline structure as guidance for organizing the dimensions:
+{outline_text}
+
+You may adapt, merge, or split these sections as needed based on the available quotes, but try to maintain the overall structure and flow suggested above."""
+            log.info(f"[SQA] Using early outline guidance with {len(early_outline)} sections")
+        
+        cluster_json = self.step_clustering(query, per_paper_summaries.result, cost_args, sys_prompt=enhanced_sys_prompt)
         plan_json = {f'{dim["name"]} ({dim["format"]})': dim["quotes"] for dim in cluster_json.result["dimensions"]}
         if not any([len(d) for d in plan_json.values()]):
-            raise Exception("The planning step failed to cluster the relevant documents.")
+            raise Exception("Clustering failed to organize documents")
         event_trace.trace_clustering_event(cluster_json, plan_json)
+        
+        section_titles = [dim["name"] for dim in cluster_json.result["dimensions"]]
+        section_formats = [dim.get("format", "synthesis") for dim in cluster_json.result["dimensions"]]
+        log.info(f"[SQA] Clustered into {len(section_titles)} sections: {section_titles}")
 
-        # step 2.1: extend the clustered snippets with their inline citations
+        # Step 6: Citation mapping
         per_paper_summaries_extd, quotes_metadata = self.extract_quote_citations(reranked_df,
                                                                                  per_paper_summaries.result,
                                                                                  plan_json, paper_metadata)
         event_trace.trace_inline_citation_following_event(per_paper_summaries_extd, quotes_metadata)
 
-        # step 3: generating output as per the outline
-        section_titles = [dim["name"] for dim in cluster_json.result["dimensions"]]
+        # Step 7: Generate structured QA response
+        log.info("[SQA] Generating structured QA response")
         gen_sections_iter = self.step_gen_iterative_summary(query, per_paper_summaries_extd,
                                                             plan_json, cost_args)
 
         json_summary, generated_sections, table_threads = [], [], []
-        tables = [None for _ in cluster_json.result["dimensions"]]
+        # Initialize per-section tables container for both STRUCTURED and SIMPLE flows
+        num_sections = len(plan_json)
+        tables = [None for _ in range(num_sections)]
         citation_ids = dict()
 
         task_estimated_time = 30 + 15 * len(plan_json)
@@ -608,7 +699,8 @@ class ScholarQA:
                     get_json_summary(self.multi_step_pipeline.llm_model, [section_text], per_paper_summaries_extd,
                                      paper_metadata,
                                      citation_ids, inline_tags)[0]
-                section_json["format"] = cluster_json.result["dimensions"][idx]["format"]
+                section_json["format"] = section_formats[idx]
+                log.debug(f"[SQA][FORMAT] Set section {idx} format to: {section_formats[idx]}")
 
                 json_summary.append(section_json)
                 self.postprocess_json_output(json_summary, quotes_meta=quotes_metadata)
