@@ -37,7 +37,7 @@ class TableRow(BaseModel):
     display_value: Optional[str] = Field(
         default=None, description="Display value of the row"
     )
-    paper_corpus_id: Optional[int] = Field(description="Corpus id of a paper")
+    paper_corpus_id: Optional[Union[int, str]] = Field(description="Corpus id of a paper (int or arXiv string)")
 
 
 class TableColumn(BaseModel):
