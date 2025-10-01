@@ -370,3 +370,70 @@ Review papers by Andrew Ng and Yann LeCun on neural networks since 2010.
 </example output #7> 
 </examples>
 """
+
+SECTION_BREAK_DOWN_PROMPT = """
+Your task is to decompose the rewritten user query into a concise set of section titles for a scientific-style outline.  
+These section titles will later be used directly as search queries, so they must remain clear, specific, and closely tied to the original rewritten query.  
+
+Here is the rewritten query you must base the outline on:
+"{rewritten_query}"
+
+<guidelines>
+- Output MUST be a valid JSON list of strings, e.g.: ["Overview of X", "Limitations of X", "Future Work on X"].
+- Generate between {min_sections} and {max_sections} sections, keeping the list as short as possible while still covering the essential aspects of the query.
+- For simple queries, produce only 1–2 highly focused sections (avoid unnecessary expansion).
+- Do NOT output vague titles like "Introduction" or "Background" alone.
+- If an introductory section is needed, make it contextual: "Overview of …" or "Introduction to …".
+- Every section must clearly reflect the main subject or concepts in the rewritten query (e.g., Graph Neural Networks, Reinforcement Learning in Robotics, NLP for Healthcare).
+- Keep titles concise, informative, and retrieval-friendly.
+- If the query is very broad or ambiguous, fall back to a safe, general outline such as: ["Overview", "Approaches", "Applications", "Challenges", "Future Directions"].
+</guidelines>
+
+<examples>
+
+<example input #1>
+Query: "What is RAG?"
+</example input #1>
+<example output #1>
+["Introduction to Retrieval-Augmented Generation (RAG)",
+ "Mechanism of RAG"]
+</example output #1>
+
+<example input #2>
+Query: "Compare reinforcement learning methods for robotics"
+</example input #2>
+<example output #2>
+["Overview of Reinforcement Learning Methods",
+ "Reinforcement Learning Methods in Robotics",
+ "Comparative Analysis of RL Approaches for Robotics",
+ "Challenges and Future Directions in RL for Robotics"]
+</example output #2>
+
+<example input #3>
+Query: "Discuss recent trends in natural language processing research"
+</example input #3>
+<example output #3>
+["Overview of Recent Natural Language Processing (NLP) Research Trends",
+ "Advances in Language Models",
+ "Applications of NLP Across Domains",
+ "Challenges and Open Questions in NLP",
+ "Future Directions for NLP Research"]
+</example output #3>
+
+<example input #4>
+Query: "Can you summarize the difference between CNN, GAN, and ResNet? I want to use them in medical image segmentation for brain tumor diseases."
+</example input #4>
+<example output #4>
+["CNN for Brain Tumor Medical Image Segmentation",
+ "GAN for Brain Tumor Medical Image Segmentation",
+ "ResNet for Brain Tumor Medical Image Segmentation",
+ "Comparisons of CNN, GAN, and ResNet in Brain Tumor Segmentation",
+ "Challenges and Future Directions in Brain Tumor Medical Image Segmentation"]
+</example output #4>
+
+</examples>
+
+<final instruction>
+Return ONLY the JSON list of section titles, nothing else.
+</final instruction>
+"""
