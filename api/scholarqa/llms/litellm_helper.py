@@ -170,8 +170,12 @@ def llm_completion(user_prompt: str, system_prompt: str = None, fallback=GPT_5_C
             res_str = args_text
 
     if res_str is None:
-        res_str = ""
-
+        logger.warning("Content returned as None, checking for response in tool_calls (final fallback)...")
+        try:
+            res_str = response["choices"][0]["message"]["tool_calls"][0].function.arguments
+        except Exception:
+            res_str = ""
+            
     cost_tuple = CompletionResult(content=res_str.strip(), model=response.model,
                                   cost=res_cost if not response.get("cache_hit") else 0.0,
                                   input_tokens=res_usage.prompt_tokens,
