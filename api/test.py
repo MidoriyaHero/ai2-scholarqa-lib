@@ -7,8 +7,7 @@ from scholarqa.llms.constants import GEMINI_25_FLASH
 
 #Retrieval class/steps
 retriever = FullTextRetriever(n_retrieval=20, n_keyword_srch=10) #full text and keyword search
-reranker = CrossEncoderScores(model_name_or_path="mixedbread-ai/mxbai-rerank-large-v1") #sentence transformer
-
+reranker = CrossEncoderScores(model_name_or_path="mixedbread-ai/mxbai-rerank-large-v1")
 
 #Reranker if deployed on Modal, modal_app_name and modal_api_name are modal specific arguments.
 #Please refer https://github.com/allenai/ai2-scholarqa-lib/blob/aps/readme_fixes/docs/MODAL.md for more info 

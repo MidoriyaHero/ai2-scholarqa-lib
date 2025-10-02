@@ -8,6 +8,107 @@ from anyascii import anyascii
 logger = logging.getLogger(__name__)
 
 
+def safe_json_parse(raw_output: Any) -> Any:
+    """
+    Best-effort JSON parser for LLM outputs.
+
+    This function attempts to robustly parse JSON-like content produced by LLMs.
+    It handles common issues such as:
+    - Markdown code fences (```json ... ``` or ``` ... ```)
+    - Leading/trailing commentary around the JSON
+    - JSON arrays or objects embedded in text
+    - Accidental single quotes for strings
+    - Trailing commas in arrays/objects
+    - CompletionCost objects from LLM calls
+
+    Returns the parsed Python object on success, otherwise raises a ValueError.
+    """
+    import json
+    import ast
+    
+    # Handle CompletionCost objects
+    if hasattr(raw_output, 'content'):
+        raw_output = raw_output.content
+    elif not isinstance(raw_output, str):
+        raw_output = str(raw_output)
+
+    def strip_code_fences(text: str) -> str:
+        text = text.strip()
+        if text.startswith("```") and text.endswith("```"):
+            # Remove the outermost fence and optional language tag
+            inner = text[3:-3].strip()
+            # If first line is a language tag like 'json' remove it
+            first_newline = inner.find("\n")
+            if first_newline != -1:
+                lang = inner[:first_newline].strip().lower()
+                if lang in {"json", "javascript", "ts", "python"}:
+                    return inner[first_newline + 1 :].strip()
+            return inner
+        return text
+
+    def extract_json_slice(text: str) -> str:
+        # Try to find the first top-level JSON array or object slice
+        stack = []
+        start = None
+        for i, ch in enumerate(text):
+            if ch in "[{":
+                if not stack:
+                    start = i
+                stack.append(ch)
+            elif ch in "]}":
+                if stack:
+                    stack.pop()
+                    if not stack and start is not None:
+                        return text[start : i + 1]
+        return text
+
+    def try_json_loads(text: str):
+        return json.loads(text)
+
+    def try_literal_eval(text: str):
+        # Fallback: handle single quotes, trailing commas sometimes tolerated by ast.literal_eval
+        return ast.literal_eval(text)
+
+    if raw_output is None:
+        raise ValueError("No content to parse")
+
+    if isinstance(raw_output, (dict, list)):
+        return raw_output
+
+    text = str(raw_output)
+    # 1) Strip fences
+    text = strip_code_fences(text)
+    # 2) Extract likely JSON slice
+    candidate = extract_json_slice(text)
+
+    # 3) Try strict json
+    try:
+        return try_json_loads(candidate)
+    except Exception:
+        pass
+
+    # 4) Soft fixes: replace single quotes with double quotes where safe
+    soft = candidate
+    if "'" in soft and '"' not in soft:
+        soft = soft.replace("'", '"')
+        try:
+            return try_json_loads(soft)
+        except Exception:
+            pass
+
+    # 5) Fallback to literal_eval for python-like structures
+    try:
+        return try_literal_eval(candidate)
+    except Exception:
+        pass
+
+    # 6) Last attempt: parse the whole text
+    try:
+        return try_json_loads(text)
+    except Exception as e:
+        raise ValueError(f"Failed to parse JSON output: {e}; raw={raw_output}")
+
+
 def find_tldr_super_token(text: str) -> Optional[str]:
     # First, find the first instance of any token that has text "tldr" or "TLDR" in it, considering word boundaries
     tldr_token = re.search(r"\b\w*tldr\w*\b", text, re.IGNORECASE)

@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import List, Any, Dict
 import logging
+from logs import log
 
 from scholarqa.utils import query_s2_api, METADATA_FIELDS, make_int, NUMERIC_META_FIELDS
 
@@ -36,10 +37,10 @@ class FullTextRetriever(AbstractRetriever):
         if not self.n_retrieval:
             return []
         query_params = {fkey: fval for fkey, fval in filter_kwargs.items() if fval}
-        query_params.update({"query": query, "limit": self.n_retrieval})
-        print(query_params)
+        query_params.update({"query": query, "limit":  self.n_retrieval})
+        log.info(f"[RAG][retriever] snippet_search params={query_params}")
         snippets = query_s2_api(
-            end_pt="snippet/search",
+            end_pt="snippet/search",    
             params=query_params,
             method="get",
         )
@@ -77,10 +78,13 @@ class FullTextRetriever(AbstractRetriever):
                 res_map["stype"] = "vespa"
                 if res_map:
                     snippets_list.append(res_map)
+        log.info(f"[RAG][retriever] snippet_search results={len(snippets_list)}")
         return snippets_list
 
     def retrieve_additional_papers(self, query: str, **filter_kwargs) -> List[Dict[str, Any]]:
-        return self.keyword_search(query, **filter_kwargs) if self.n_keyword_srch else []
+        res = self.keyword_search(query, **filter_kwargs) if self.n_keyword_srch else []
+        log.info(f"[RAG][retriever] keyword_search results={len(res)}")
+        return res
 
     def keyword_search(self, kquery: str, **filter_kwargs) -> List[Dict[str, Any]]:
         """Query the Semantic Scholar API keyword search end point and return top n papers.
@@ -90,7 +94,7 @@ class FullTextRetriever(AbstractRetriever):
 
         paper_data = []
         query_params = {fkey: fval for fkey, fval in filter_kwargs.items() if fval}
-        query_params.update({"query": kquery, "limit": self.n_keyword_srch, "fields": METADATA_FIELDS})
+        query_params.update({"query": kquery, "limit": min(self.n_keyword_srch, 20), "fields": METADATA_FIELDS})
         res = query_s2_api(
             end_pt="paper/search",
             params=query_params,

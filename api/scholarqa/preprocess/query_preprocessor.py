@@ -24,7 +24,7 @@ class DecomposedQuery(BaseModel):
     venues: str = Field(description="Comma separated list of venues to search for papers")
     authors: Union[List[str], str] = Field(description="List of authors to search for papers", default=[])
     field_of_study: str = Field(description="Comma separated list of field of study to search for papers")
-    rewritten_query: str = Field(description="The rewritten simplified query")
+    rewritten_query: str = Field(description="The rewritten simplified query") 
     rewritten_query_for_keyword_search: str = Field(description="The rewritten query for keyword search")
 
 
@@ -52,7 +52,7 @@ def validate(query: str) -> None:
 def decompose_query(query: str, decomposer_llm_model: str, **llm_kwargs) -> Tuple[LLMProcessedQuery, CompletionResult]:
     search_filters = dict()
     decomp_query_res = None
-    try:
+    try: 
         # decompose query to get llm re-written and keyword query with filters
         decomp_query_res = llm_completion(user_prompt=query, system_prompt=QUERY_DECOMPOSER_PROMPT,
                                           model=decomposer_llm_model, response_format=DecomposedQuery, **llm_kwargs)
